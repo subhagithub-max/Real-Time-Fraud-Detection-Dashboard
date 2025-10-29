@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Fraud Detection System</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #111827;
+            color: #d1d5db;
+        }
+        .table-scrollbar::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        .table-scrollbar::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+        .table-scrollbar::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        .table-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+        .status-ALLOW { background-color: rgba(16, 185, 129, 0.1); }
+        .status-CHALLENGE { background-color: rgba(245, 158, 11, 0.1); }
+        .status-BLOCK { background-color: rgba(239, 68, 68, 0.15); }
+
+        .status-ALLOW:hover { background-color: rgba(16, 185, 129, 0.2); }
+        .status-CHALLENGE:hover { background-color: rgba(245, 158, 11, 0.2); }
+        .status-BLOCK:hover { background-color: rgba(239, 68, 68, 0.25); }
+
+        .graph-node {
+            cursor: pointer;
+            transition: transform 0.2s ease-in-out;
+        }
+        .graph-node:hover {
+            transform: scale(1.1);
+        }
+        .graph-text {
+            font-size: 10px;
+            fill: #e5e7eb;
+            pointer-events: none;
+            text-anchor: middle;
+        }
+        .graph-link {
+            stroke: #4b5563;
+            stroke-opacity: 0.6;
+        }
+        .feedback-btn-safe { background-color: #059669; }
+        .feedback-btn-safe:hover { background-color: #047857; }
+        .feedback-btn-fraud { background-color: #dc2626; }
+        .feedback-btn-fraud:hover { background-color: #b91c1c; }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .new-row {
+            animation: fadeIn 0.5s ease-out;
+        }
+    </style>
+</head>
+<body class="p-4 lg:p-8">
+
+    <div class="max-w-screen-2xl mx-auto">
+        <!-- Header -->
+        <header class="mb-6">
+            <h1 class="text-3xl font-bold text-white">Real-Time UPI/Banking Fraud Detection</h1>
+            <p class="text-gray-400 mt-1">Live Dashboard Simulation</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Left Column: Graph and Details -->
+            <div class="lg:col-span-1 flex flex-col gap-6">
+                <!-- Graph Visualization -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow-lg h-96">
+                    <h2 class="text-lg font-semibold text-white mb-2">Transaction Entity Graph</h2>
+                    <div id="graph-container" class="w-full h-full flex items-center justify-center">
+                        <svg id="graph-svg" class="w-full h-full"></svg>
+                         <p id="graph-placeholder" class="text-gray-500">Select a transaction to view its graph</p>
+                    </div>
+                </div>
+
+                <!-- Selected Transaction Details -->
+                <div class="bg-gray-800 p-4 rounded-lg shadow-lg">
+                    <h2 class="text-lg font-semibold text-white mb-3">Analysis Details</h2>
+                    <div id="details-panel" class="text-gray-400">
+                        <p id="details-placeholder">No transaction selected</p>
+                        <div id="details-content" class="hidden space-y-2 text-sm">
+                            <p><strong>Transaction ID:</strong> <span id="detail-id"></span></p>
+                            <p><strong>Risk Score:</strong> <span id="detail-score" class="font-bold"></span></p>
+                            <p><strong>Decision:</strong> <span id="detail-decision" class="font-semibold"></span></p>
+                            <p><strong>Explainability:</strong> <span id="detail-reasons" class="italic"></span></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Transactions Feed -->
+            <div class="lg:col-span-2 bg-gray-800 p-4 rounded-lg shadow-lg">
+                <div class="flex flex-col sm:flex-row justify-between items-center mb-4">
+                    <h2 class="text-lg font-semibold text-white">Live Transaction Feed</h2>
+                    <div class="mt-3 sm:mt-0 w-full sm:w-auto">
+                        <input type="text" id="search-box" placeholder="Search by ID, User, Merchant..." class="w-full sm:w-64 bg-gray-700 border border-gray-600 rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-400 focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    </div>
+                </div>
+                <div class="overflow-auto h-[70vh] table-scrollbar">
+                    <table class="min-w-full text-sm text-left text-gray-300">
+                        <thead class="text-xs text-gray-400 uppercase bg-gray-700 sticky top-0">
+                            <tr>
+                                <th scope="col" class="px-4 py-3">Timestamp</th>
+                                <th scope="col" class="px-4 py-3">Transaction ID</th>
+                                <th scope="col" class="px-4 py-3">User</th>
+                                <th scope="col" class="px-4 py-3">Merchant</th>
+                                <th scope="col" class="px-4 py-3">Amount</th>
+                                <th scope="col" class="px-4 py-3">Decision</th>
+                                <th scope="col" class="px-4 py-3 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transactions-tbody">
+                            <!-- Rows will be injected here by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+
+        // --- DOM ELEMENTS ---
+        const tbody = document.getElementById('transactions-tbody');
+        const searchBox = document.getElementById('search-box');
+        const graphPlaceholder = document.getElementById('graph-placeholder');
+        const detailsPlaceholder = document.getElementById('details-placeholder');
+        const graphSvgElement = document.getElementById('graph-svg');
+        const detailsContent = document.getElementById('details-content');
+
+        // --- STATE MANAGEMENT ---
+        let transactions = [];
+        let simulationInterval;
+        let selectedTransactionId = null;
+
+        // --- MOCK DATA GENERATORS ---
+        const MOCK_USERS = ['user_101', 'user_102', 'user_103', 'user_104', 'user_105'];
+        const MOCK_MERCHANTS = ['Swiggy', 'Zomato', 'Amazon', 'Flipkart', 'BigBasket', 'Uber', 'Ola'];
+        const MOCK_DEVICES = ['device_A', 'device_B', 'device_C', 'device_D', 'device_E'];
+        const MOCK_IPS = ['192.168.1.1', '10.0.0.5', '172.16.0.10', '203.0.113.25', '198.51.100.8'];
+        const MOCK_REASONS = [
+            'High transaction frequency',
+            'Anomalous location',
+            'New device detected',
+            'Transaction amount deviates from norm',
+            'Suspicious merchant category',
+            'Time of day anomaly'
+        ];
+        
+        function getRandomElement(arr) {
+            return arr[Math.floor(Math.random() * arr.length)];
+        }
+        
+        // --- SIMULATION CORE ---
+
+        /**
+         * Simulates a transaction event from a Kafka stream.
+         */
+        function generateDummyTransaction() {
+            const amount = (Math.random() * 2000 + 10).toFixed(2);
+            return {
+                id: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+                timestamp: new Date(),
+                user: getRandomElement(MOCK_USERS),
+                merchant: getRandomElement(MOCK_MERCHANTS),
+                amount: parseFloat(amount),
+                device: getRandomElement(MOCK_DEVICES),
+                ip: getRandomElement(MOCK_IPS),
+                feedback: 'N/A'
+            };
+        }
+
+        /**
+         * Simulates the backend ML model prediction API call.
+         * @param {object} transaction - The transaction data.
+         * @returns {object} The transaction enriched with a fraud score and decision.
+         */
+        function mockPredictAPI(transaction) {
+            const riskScore = Math.random();
+            let decision = 'ALLOW';
+            let reasons = [];
+
+            if (riskScore > 0.95) {
+                decision = 'BLOCK';
+                reasons.push(getRandomElement(MOCK_REASONS));
+                if (Math.random() > 0.5) reasons.push(getRandomElement(MOCK_REASONS));
+            } else if (riskScore > 0.8) {
+                decision = 'CHALLENGE';
+                reasons.push(getRandomElement(MOCK_REASONS));
+            } else {
+                reasons.push('Normal transaction behavior');
+            }
+
+            return {
+                ...transaction,
+                riskScore: riskScore.toFixed(4),
+                decision,
+                reasons: Array.from(new Set(reasons)).join(', ')
+            };
+        }
+
+        /**
+         * Main processing function for an incoming transaction.
+         */
+        function processNewTransaction() {
+            const rawTxn = generateDummyTransaction();
+            const scoredTxn = mockPredictAPI(rawTxn);
+            transactions.unshift(scoredTxn);
+            if (transactions.length > 200) { // Keep the list manageable
+                transactions.pop();
+            }
+            renderTransactions();
+        }
+
+        // --- UI RENDERING ---
+
+        /**
+         * Renders the list of transactions in the table.
+         */
+        function renderTransactions() {
+            const searchTerm = searchBox.value.toLowerCase();
+            const filteredTransactions = transactions.filter(txn => 
+                txn.id.toLowerCase().includes(searchTerm) ||
+                txn.user.toLowerCase().includes(searchTerm) ||
+                txn.merchant.toLowerCase().includes(searchTerm)
+            );
+
+            tbody.innerHTML = '';
+            filteredTransactions.forEach((txn, index) => {
+                const tr = document.createElement('tr');
+                tr.className = `border-b border-gray-700 transition-colors duration-300 status-${txn.decision}`;
+                if (index === 0) {
+                   tr.classList.add('new-row');
+                }
+                if (txn.id === selectedTransactionId) {
+                    tr.classList.add('bg-blue-900/50');
+                }
+                
+                let decisionColor = 'text-green-400';
+                if(txn.decision === 'CHALLENGE') decisionColor = 'text-yellow-400';
+                if(txn.decision === 'BLOCK') decisionColor = 'text-red-400';
+
+                tr.innerHTML = `
+                    <td class="px-4 py-2">${txn.timestamp.toLocaleTimeString()}</td>
+                    <td class="px-4 py-2 font-mono text-xs">${txn.id}</td>
+                    <td class="px-4 py-2">${txn.user}</td>
+                    <td class="px-4 py-2">${txn.merchant}</td>
+                    <td class="px-4 py-2 text-right font-semibold">₹${txn.amount.toFixed(2)}</td>
+                    <td class="px-4 py-2 font-bold ${decisionColor}">${txn.decision}</td>
+                    <td class="px-4 py-2 text-center">
+                        <button data-id="${txn.id}" class="view-graph-btn bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-1 px-2 rounded">Graph</button>
+                        <button data-id="${txn.id}" data-feedback="Safe" class="feedback-btn feedback-btn-safe text-white text-xs font-bold py-1 px-2 rounded ml-1">Safe</button>
+                        <button data-id="${txn.id}" data-feedback="Fraud" class="feedback-btn feedback-btn-fraud text-white text-xs font-bold py-1 px-2 rounded ml-1">Fraud</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+        
+        /**
+         * Updates the details panel with info for a given transaction.
+         * @param {object} txn - The selected transaction.
+         */
+        function updateDetailsPanel(txn) {
+            detailsPlaceholder.classList.add('hidden');
+            detailsContent.classList.remove('hidden');
+            
+            let decisionColor = 'text-green-400';
+            if(txn.decision === 'CHALLENGE') decisionColor = 'text-yellow-400';
+            if(txn.decision === 'BLOCK') decisionColor = 'text-red-400';
+
+            document.getElementById('detail-id').textContent = txn.id;
+            document.getElementById('detail-score').textContent = txn.riskScore;
+            document.getElementById('detail-score').className = `font-bold ${decisionColor}`;
+            document.getElementById('detail-decision').textContent = txn.decision;
+            document.getElementById('detail-decision').className = `font-semibold ${decisionColor}`;
+            document.getElementById('detail-reasons').textContent = txn.reasons;
+        }
+
+        /**
+         * Renders the entity graph for a transaction using D3.js.
+         * @param {object} txn - The selected transaction.
+         */
+        function renderGraph(txn) {
+            graphPlaceholder.style.display = 'none';
+            graphSvgElement.style.display = 'block';
+
+            const nodes = [
+                { id: txn.user, group: 1, label: 'User' },
+                { id: txn.device, group: 2, label: 'Device' },
+                { id: txn.merchant, group: 3, label: 'Merchant' },
+                { id: txn.ip, group: 4, label: 'IP' }
+            ];
+
+            const links = [
+                { source: txn.user, target: txn.device },
+                { source: txn.user, target: txn.merchant },
+                { source: txn.user, target: txn.ip },
+                { source: txn.device, target: txn.ip }
+            ];
+
+            const width = graphSvgElement.clientWidth;
+            const height = graphSvgElement.clientHeight;
+            
+            d3.select(graphSvgElement).selectAll("*").remove(); // Clear previous graph
+            const svg = d3.select(graphSvgElement)
+                .attr("viewBox", [-width / 2, -height / 2, width, height]);
+
+            const simulation = d3.forceSimulation(nodes)
+                .force("link", d3.forceLink(links).id(d => d.id).distance(100))
+                .force("charge", d3.forceManyBody().strength(-200))
+                .force("center", d3.forceCenter());
+
+            const link = svg.append("g")
+                .attr("class", "graph-link")
+                .selectAll("line")
+                .data(links)
+                .join("line")
+                .attr("stroke-width", 1.5);
+
+            const node = svg.append("g")
+                .selectAll("g")
+                .data(nodes)
+                .join("g")
+                .attr("class", "graph-node")
+                .call(drag(simulation));
+            
+            const color = d3.scaleOrdinal(d3.schemeCategory10);
+
+            node.append("circle")
+                .attr("r", 20)
+                .attr("fill", d => color(d.group));
+
+            node.append("text")
+                .attr("y", 30)
+                .attr("class", "graph-text font-semibold")
+                .text(d => d.id);
+                
+            node.append("text")
+                .attr("y", 42)
+                .attr("class", "graph-text")
+                .text(d => d.label);
+
+            simulation.on("tick", () => {
+                link
+                    .attr("x1", d => d.source.x)
+                    .attr("y1", d => d.source.y)
+                    .attr("x2", d => d.target.x)
+                    .attr("y2", d => d.target.y);
+
+                node
+                    .attr("transform", d => `translate(${d.x},${d.y})`);
+            });
+            
+            function drag(simulation) {
+                function dragstarted(event) {
+                    if (!event.active) simulation.alphaTarget(0.3).restart();
+                    event.subject.fx = event.subject.x;
+                    event.subject.fy = event.subject.y;
+                }
+                function dragged(event) {
+                    event.subject.fx = event.x;
+                    event.subject.fy = event.y;
+                }
+                function dragended(event) {
+                    if (!event.active) simulation.alphaTarget(0);
+                    event.subject.fx = null;
+                    event.subject.fy = null;
+                }
+                return d3.drag().on("start", dragstarted).on("drag", dragged).on("end", dragended);
+            }
+        }
+
+
+        // --- EVENT HANDLERS ---
+        searchBox.addEventListener('input', renderTransactions);
+        
+        tbody.addEventListener('click', (e) => {
+            const target = e.target;
+            const id = target.dataset.id;
+            if (!id) return;
+
+            const txn = transactions.find(t => t.id === id);
+            if (!txn) return;
+
+            if (target.classList.contains('view-graph-btn')) {
+                selectedTransactionId = id;
+                renderGraph(txn);
+                updateDetailsPanel(txn);
+                renderTransactions(); // To highlight the row
+            }
+
+            if (target.classList.contains('feedback-btn')) {
+                // Simulate feedback API call
+                txn.feedback = target.dataset.feedback;
+                // Optional: Update UI to show feedback was registered
+                target.closest('td').innerHTML = `<span class="text-xs font-semibold text-gray-400">Feedback: ${txn.feedback}</span>`;
+            }
+        });
+
+
+        // --- INITIALIZATION ---
+        function startSimulation() {
+            stopSimulation();
+            simulationInterval = setInterval(processNewTransaction, 2000); // New transaction every 2 seconds
+        }
+
+        function stopSimulation() {
+            clearInterval(simulationInterval);
+        }
+
+        // Start the simulation
+        for(let i=0; i<20; i++) { // Pre-populate some data
+            processNewTransaction();
+        }
+        renderTransactions();
+        startSimulation();
+    });
+    </script>
+</body>
+</html>

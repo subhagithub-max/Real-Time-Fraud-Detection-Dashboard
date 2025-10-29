@@ -1,0 +1,209 @@
+Architecture & Implementation: Real-Time Fraud Detection System
+This document outlines the complete architecture for the production-grade, real-time fraud detection system simulated in fraud_detection_dashboard.html.
+
+1. System Architecture Overview
+The system is designed as a modular, scalable, and low-latency pipeline for processing financial transactions and detecting fraud in real-time.
+
+Workflow:
+
+Ingestion: Transaction data is produced by payment gateways and sent to a Kafka topic.
+
+Streaming Process: A Spark Structured Streaming job consumes transactions from Kafka.
+
+Enrichment & Feature Engineering: For each transaction, Spark queries MongoDB and Redis to fetch historical features about the user, device, merchant, and IP address. New features are computed on the fly (e.g., transaction frequency, amount deviation).
+
+Model Inference: The enriched transaction data is sent to the Machine Learning Inference Service. The GNN model calculates a relationship-based fraud score, while a secondary anomaly detection model provides a fallback score.
+
+Decisioning: The service combines model outputs to generate a final risk score, a decision (ALLOW, CHALLENGE, BLOCK), and explainability reasons.
+
+Data Persistence: The raw transaction, enriched features, and model prediction are stored in MongoDB for logging, analytics, and model retraining.
+
+Real-time Push: The final prediction is pushed to a "results" Kafka topic.
+
+API & Frontend: A separate WebSocket server or SSE (Server-Sent Events) endpoint consumes from the results topic and pushes live data to the frontend dashboard. The frontend also uses a REST API to submit manual feedback.
+
+2. Component Deep Dive
+2.1. Data Ingestion (Apache Kafka)
+Purpose: Decouples transaction producers from consumers, providing a durable, high-throughput buffer for incoming data.
+
+Topics:
+
+transactions_raw: For incoming raw transaction events.
+
+transactions_scored: For processed transactions with fraud scores.
+
+Setup (docker-compose.yml snippet):
+
+version: '3.8'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    depends_on: [zookeeper]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+2.2. Stream Processing (Apache Spark)
+Purpose: Real-time data consumption, enrichment, and processing. Spark Structured Streaming provides fault tolerance and exactly-once processing guarantees.
+
+Python (PySpark) Example:
+
+# spark_processor.py
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import from_json, col
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+
+spark = SparkSession.builder \
+    .appName("FraudDetectionStreaming") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.2.0") \
+    .getOrCreate()
+
+# Define schema for incoming transaction
+schema = StructType([...]) # Define fields: id, user, amount, etc.
+
+# Read from Kafka
+kafka_df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:29092") \
+    .option("subscribe", "transactions_raw") \
+    .load()
+
+# Deserialize JSON
+txn_df = kafka_df.select(from_json(col("value").cast("string"), schema).alias("data")).select("data.*")
+
+# --- ENRICHMENT LOGIC HERE ---
+# 1. Query Redis for cached features
+# 2. Query MongoDB for graph features/historical data
+# 3. Compute new features
+# 4. Call ML Inference API
+# enriched_df = txn_df.mapInPandas(...)
+
+# Write results to another Kafka topic
+query = enriched_df.selectExpr("to_json(struct(*)) AS value") \
+    .writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "kafka:29092") \
+    .option("topic", "transactions_scored") \
+    .option("checkpointLocation", "/tmp/spark_checkpoints") \
+    .start()
+
+query.awaitTermination()
+
+2.3. Data Storage (MongoDB & Redis)
+MongoDB (Graph & Long-term Storage):
+
+Purpose: Stores the graph of entities (users, devices, merchants) and their historical transactions. Its flexible schema is ideal for this.
+
+Schema Example (Collections):
+
+users: { "_id": "user_101", "first_seen": "...", "total_spend": "..." }
+
+devices: { "_id": "device_A", "associated_users": ["user_101"] }
+
+transactions: Stores all scored transactions.
+
+Redis (Low-Latency Cache):
+
+Purpose: Caches frequently accessed features for ultra-low latency enrichment.
+
+Data Stored: User's average transaction amount, transaction count in the last hour, etc.
+
+Example (Python): redis_client.set("user_101:avg_spend", 550.75, ex=3600)
+
+2.4. Machine Learning Models
+GNN (ml/gnn_model.py):
+
+Library: PyTorch Geometric (PyG).
+
+Concept: Models transactions as a heterogeneous graph. Nodes are users, merchants, devices. Edges represent transactions. The GNN learns embeddings for nodes that capture relationship patterns indicative of fraud.
+
+Example Snippet (PyG):
+
+import torch
+from torch_geometric.nn import SAGEConv, to_hetero
+
+class GNN(torch.nn.Module):
+    def __init__(self, hidden_channels, out_channels):
+        super().__init__()
+        self.conv1 = SAGEConv((-1, -1), hidden_channels)
+        self.conv2 = SAGEConv((-1, -1), out_channels)
+
+    def forward(self, x, edge_index):
+        x = self.conv1(x, edge_index).relu()
+        x = self.conv2(x, edge_index)
+        return x
+
+# In production, this would be wrapped in a to_hetero() call
+# model = to_hetero(GNN(...), data.metadata(), aggr='sum')
+
+Anomaly Detection (ml/anomaly_model.py):
+
+Library: Scikit-learn.
+
+Model: Isolation Forest or Autoencoder.
+
+Purpose: Acts as a fallback/secondary model. It's effective at catching fraud that doesn't have strong graph patterns but is anomalous based on features like amount, time, or frequency.
+
+2.5. Backend API (FastAPI)
+Purpose: Exposes endpoints for inference and frontend communication.
+
+backend/main.py Snippet:
+
+from fastapi import FastAPI, WebSocket
+from pydantic import BaseModel
+import kafka # Using kafka-python library
+
+app = FastAPI()
+
+class Transaction(BaseModel):
+    id: str
+    user: str
+    amount: float
+    # ... other features
+
+# This would be the endpoint called by Spark
+@app.post("/predict")
+async def predict_fraud(transaction: Transaction):
+    # 1. Load GNN and Anomaly models
+    # 2. Preprocess features
+    # 3. Run inference
+    # 4. Combine scores and generate decision
+    risk_score = 0.85 
+    decision = "CHALLENGE"
+    return {"transaction_id": transaction.id, "risk_score": risk_score, "decision": decision}
+
+# This endpoint pushes live data to the frontend
+@app.websocket("/ws/transactions/live")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    consumer = kafka.KafkaConsumer(
+        'transactions_scored',
+        bootstrap_servers='localhost:9092',
+        value_deserializer=lambda m: json.loads(m.decode('ascii')))
+    for message in consumer:
+        await websocket.send_json(message.value)
+
+3. Deployment & Operations
+Containerization (Docker): Each service (Spark processor, API, models, databases) should be containerized for portability and isolation. A docker-compose.yml file orchestrates the local development environment.
+
+Orchestration (Kubernetes): For production, Kubernetes manifests (deployment.yaml, service.yaml) would be used to manage scaling, networking, and resilience.
+
+Monitoring:
+
+Prometheus: Scrapes metrics from services (e.g., API latency, transactions processed per second).
+
+Grafana: Visualizes Prometheus metrics in dashboards.
+
+Logging:
+
+ELK Stack (Elasticsearch, Logstash, Kibana): Services write logs to stdout, which are collected by a log shipper (like Fluentd), processed by Logstash, stored in Elasticsearch, and visualized in Kibana for debugging and analysis.
